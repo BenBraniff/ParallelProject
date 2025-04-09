@@ -1,15 +1,12 @@
 import cv2
 import numpy as np
 import pycuda.driver as cuda
-import pycuda.autoinit
+import pycuda.autoinit  # Automatically initializes the CUDA context in Colab
 from pycuda.compiler import SourceModule
 import kagglehub
 import os
 import time
 import matplotlib.pyplot as plt
-
-
-# Ben
 
 # CUDA kernel to process the image (convert to grayscale)
 kernel_code = """
@@ -29,10 +26,7 @@ __global__ void process_image_kernel(unsigned char *d_image, int width, int heig
 }
 """
 
-def convert_image_to_matrix_cuda(image_path, block_size = (16, 16, 1)):
-    #                                         ^^^
-    # Made block_size a parameter so we can control it from the main function -Ben
-
+def convert_image_to_matrix_cuda(image_path, block_size=(16, 16, 1)):
     # Load the image using OpenCV
     image = cv2.imread(image_path)  # Read the image in color (BGR)
     if image is None:
@@ -57,7 +51,6 @@ def convert_image_to_matrix_cuda(image_path, block_size = (16, 16, 1)):
     process_image_kernel = mod.get_function("process_image_kernel")
 
     # Define block and grid dimensions for kernel launch
-    # made the grid size a parameter in function
     grid_size = ((width + block_size[0] - 1) // block_size[0], 
                  (height + block_size[1] - 1) // block_size[1])
 
@@ -76,90 +69,63 @@ def convert_image_to_matrix_cuda(image_path, block_size = (16, 16, 1)):
     cv2.imwrite(output_path, processed_image)
     return output_path
 
-#                                 \/ added this in parameter -Ben
-def process_batch(batch_images, block_size = (16, 16, 1)):
+def process_batch(batch_images, block_size=(16, 16, 1)):
     start_time = time.time()
 
     processed_images = []
-    # process images in the batch linearly (or non-parallel way) using a for loop
+    # Process images in the batch linearly (or non-parallel way) using a for loop
     for image_path in batch_images:
-        #                                                           \/ and here Ben
         processed_image = convert_image_to_matrix_cuda(image_path, block_size)
         if processed_image:
             processed_images.append(processed_image)
 
     end_time = time.time()
-    print(f"Processed batch {len(processed_images)} images in {end_time - start_time:.2f} seconds.")
-    return processed_images
-
+    # print(f"Processed batch {len(processed_images)} images in {end_time - start_time:.2f} seconds.")
+    return end_time - start_time  # Return time for batch processing
 
 def main():
-    # Download the dataset using KaggleHub
-    dataset_path = kagglehub.dataset_download("kmader/food41")
-    
+    # Path to check if dataset is already downloaded
+    dataset_path = '/content/food41'  # Change this to the path where your dataset is stored locally
+    # now I don't have to keep redownloading everytime
+
+    # Check if the dataset exists, if not, download it
+    if not os.path.exists(dataset_path):
+        print("Dataset not found. Downloading...")
+        dataset_path = kagglehub.dataset_download("kmader/food41")
+    else:
+        print("Dataset already exists. Using the existing dataset.")
+
     # Generate a list of image paths to process (example for "apple_pie" folder)
     image_folder = os.path.join(dataset_path, "images", "apple_pie")
-    image_paths = [os.path.join(image_folder, f) for f in os.listdir(image_folder) if f.endswith((".jpg", ".jpeg"))] # could end in .jpeg too -Ben
+    image_paths = [os.path.join(image_folder, f) for f in os.listdir(image_folder) if f.endswith((".jpg", ".jpeg"))] 
     
-    # old code
-    '''
-    # This block_size is where we can control the thread count -Ben
-    block_size = (16, 16, 1)
-
-    # Process images in batches of 50
-    batch_size = 50
-    total_start_time = time.time()
-    for i in range(0, len(image_paths), batch_size):
-        batch_images = image_paths[i:i + batch_size]
-        process_batch(batch_images, block_size=block_size)
-        #                            ^ added this -Ben
-    total_end_time = time.time()
-    print(f"Total processing time: {total_end_time - total_start_time:.2f} seconds.")
-    '''
-
-    # new code testing mulitple block sizes
-    '''
-    This block_sizes is where we can control the thread count -Ben
-    You can experiment with (8, 8, 1), (16, 16, 1), (32, 32, 1), (64, 1, 1), etc.
-    (blockDim.x, blockDim.y, blockDim.z)
-    blockDim.x: Number of threads in the x-direction (width of the block).
-    blockDim.y: Number of threads in the y-direction (height of the block).
-    blockDim.z: Number of threads in the z-direction (depth of the block, typically 1 unless doing 3D computations).
-    
-    More to test:
-    (4, 4, 1): Small block, 16 threads per block. Great for small images.
-    (8, 4, 1): 32 threads per block. A good balance for some cases.
-    (32, 8, 1): 256 threads per block. Larger block sizes may be more efficient.
-    (64, 4, 1): 256 threads per block, but fewer threads in the y-direction.
-    (64, 16, 1): A large block size of 1024 threads per block. Useful for very large images or high-performance GPUs.
-    
-    total_threads = grid_dim.x * grid_dim.y * block_dim.x * block_dim.y
-    '''
-    block_sizes = [(8, 8, 1), (16, 16, 1), (32, 32, 1), (64, 1, 1), (4, 4, 1), (32, 8, 1)]
-    times = []
+    block_sizes = [
+        (8, 8, 1), (16, 16, 1), (32, 32, 1), (64, 1, 1), (4, 4, 1), 
+        (32, 8, 1), (128, 1, 1), (8, 4, 1), (64, 4, 1), (16, 8, 1),
+        (64, 16, 1), (256, 1, 1), (8, 16, 1)
+    ]
+    times = {block_size: [] for block_size in block_sizes}
 
     for block_size in block_sizes:
-        start_time = time.time()
-        # Process images in batches of 50 (for each block size)
         batch_size = 50
         for i in range(0, len(image_paths), batch_size):
             batch_images = image_paths[i:i + batch_size]
-            process_batch(batch_images, block_size=block_size)
-        
-        end_time = time.time()
-        times.append(end_time - start_time)
+            batch_time = process_batch(batch_images, block_size=block_size)
+            times[block_size].append(batch_time)
+            print(f"Processed block_size: {block_size} in {batch_time:.3f}s")
 
-    # Plotting the resulting times for differing block sizes
+
+    # Plotting the resulting times for differing block sizes using a box plot
     block_labels = [f"{b[0]}x{b[1]}" for b in block_sizes]
-    plt.plot(block_labels, times, marker='o')
+    time_data = [times[b] for b in block_sizes]
+
+    plt.boxplot(time_data, labels=block_labels)
     plt.xlabel('Block Size (threads per block)')
     plt.ylabel('Processing Time (seconds)')
-    plt.title('Processing Time vs Block Size')
+    plt.title('Processing Time vs Block Size (Box Plot)')
+    plt.xticks(rotation=45)
     plt.grid(True)
     plt.show()
 
-
 if __name__ == "__main__":
     main()
-
-# I can't run this because of my mac doesn't have an nvidia GPU :( -Ben
